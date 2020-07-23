@@ -6,10 +6,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using JetBrains.Annotations;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Utilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -463,33 +462,11 @@ namespace Microsoft.EntityFrameworkCore.Infrastructure
             StoreObjectIdentifier storeObject,
             [NotNull] IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
         {
-            Dictionary<string, IProperty> storeConcurrencyTokens = null;
+            var concurrencyColumns = TableSharingConcurrencyTokenConvention.GetConcurrencyTokensMap(storeObject, mappedTypes);
             HashSet<string> missingConcurrencyTokens = null;
-            if (mappedTypes.Count > 1)
+            if (concurrencyColumns != null)
             {
-                foreach (var property in mappedTypes.SelectMany(et => et.GetDeclaredProperties()))
-                {
-                    if (property.IsConcurrencyToken
-                        && (property.ValueGenerated & ValueGenerated.OnUpdate) != 0)
-                    {
-                        if (storeConcurrencyTokens == null)
-                        {
-                            storeConcurrencyTokens = new Dictionary<string, IProperty>();
-                        }
-
-                        var columnName = property.GetColumnName(storeObject);
-                        if (columnName == null)
-                        {
-                            continue;
-                        }
-
-                        storeConcurrencyTokens[columnName] = property;
-                        if (missingConcurrencyTokens == null)
-                        {
-                            missingConcurrencyTokens = new HashSet<string>();
-                        }
-                    }
-                }
+                missingConcurrencyTokens = new HashSet<string>();
             }
 
             var propertyMappings = new Dictionary<string, IProperty>();
@@ -498,12 +475,9 @@ namespace Microsoft.EntityFrameworkCore.Infrastructure
                 if (missingConcurrencyTokens != null)
                 {
                     missingConcurrencyTokens.Clear();
-                    foreach (var tokenPair in storeConcurrencyTokens)
+                    foreach (var tokenPair in concurrencyColumns)
                     {
-                        var declaringType = tokenPair.Value.DeclaringEntityType;
-                        if (!declaringType.IsAssignableFrom(entityType)
-                            && !declaringType.IsInOwnershipPath(entityType)
-                            && !entityType.IsInOwnershipPath(declaringType))
+                        if (TableSharingConcurrencyTokenConvention.IsConcurrencyTokenMissing(tokenPair.Value, entityType, mappedTypes))
                         {
                             missingConcurrencyTokens.Add(tokenPair.Key);
                         }
@@ -527,7 +501,7 @@ namespace Microsoft.EntityFrameworkCore.Infrastructure
                 {
                     foreach (var missingColumn in missingConcurrencyTokens)
                     {
-                        if (entityType.GetAllBaseTypes().SelectMany(t => t.GetDeclaredProperties())
+                        if (entityType.GetAllBaseTypesAscending().SelectMany(t => t.GetDeclaredProperties())
                             .All(p => p.GetColumnName(storeObject) != missingColumn))
                         {
                             throw new InvalidOperationException(
